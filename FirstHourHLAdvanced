@@ -1,0 +1,340 @@
+// Name:        FirstHourHLAdvanced
+// Author:      EgoNoBueno
+// Date:        05/25/2025
+// Version:     1.2
+// Description: Marks the High and Low of the first 1-hour bar of the session, starting from a user-defined time.
+//              Works on any chart timeframe. Only shows lines for the current processed session day.
+
+#region Using declarations
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.ComponentModel.DataAnnotations;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Input;
+using System.Windows.Media;
+using System.Xml.Serialization;
+using NinjaTrader.Core.FloatingPoint;
+using NinjaTrader.Gui;
+using NinjaTrader.Gui.Chart;
+using NinjaTrader.Gui.SuperDom;
+using NinjaTrader.Gui.Tools;
+using NinjaTrader.Data;
+using NinjaTrader.NinjaScript;
+using NinjaTrader.NinjaScript.DrawingTools;
+#endregion
+
+//This namespace holds Indicators in this folder and is required. Do not change it.
+namespace NinjaTrader.NinjaScript.Indicators
+{
+    public class FirstHourHLAdvanced : Indicator
+    {
+        private double sessionHigh = double.NaN;
+        private double sessionLow = double.NaN;
+        private DateTime currentSessionDate = DateTime.MinValue;
+        private DateTime previousSessionDateForLineRemoval = DateTime.MinValue;
+        private bool firstHourOfSessionCapturedToday = false;
+
+        private string activeHighLineTag = string.Empty;
+        private string activeLowLineTag = string.Empty;
+
+        protected override void OnStateChange()
+        {
+            if (State == State.SetDefaults)
+            {
+                Description     = @"Marks High/Low of the first 1-hour bar from Session Start Time. Shows for current session day only. Apply to any chart type.";
+                Name            = "FirstHourHLAdvanced";
+                Calculate       = Calculate.OnBarClose; // Or Calculate.OnEachTick if more responsive plotting is needed for primary series
+                IsOverlay       = true;
+                DisplayInDataBox= true;
+                DrawOnPricePanel= true;
+                PaintPriceMarkers= false;
+                IsAutoScale     = true; // Let NT auto-scale, as lines are day-specific
+
+                HighLineColor   = Brushes.Chartreuse;
+                LowLineColor    = Brushes.Chartreuse;
+                LineWidth       = 2;
+                SessionStartTime = new TimeSpan(9, 30, 0); // Default to 9:30 AM
+
+                AddPlot(new Stroke(HighLineColor, LineWidth), PlotStyle.Hash, "FirstHourHigh");
+                AddPlot(new Stroke(LowLineColor, LineWidth), PlotStyle.Hash, "FirstHourLow");
+            }
+            else if (State == State.Configure)
+            {
+                // Add a 60-minute data series. BarsInProgress == 0 is primary, BarsInProgress == 1 is 60-min.
+                AddDataSeries(BarsPeriodType.Minute, 60);
+            }
+            else if (State == State.DataLoaded)
+            {
+                // Initialization after data is loaded, if any.
+            }
+            else if (State == State.Terminated)
+            {
+                // Clean up any drawn objects when the indicator is removed
+                if (!string.IsNullOrEmpty(activeHighLineTag))
+                    RemoveDrawObject(activeHighLineTag);
+                if (!string.IsNullOrEmpty(activeLowLineTag))
+                    RemoveDrawObject(activeLowLineTag);
+            }
+        }
+
+        protected override void OnBarUpdate()
+        {
+            // Wait for enough bars on both series. CurrentBars[1] refers to the 60-min series.
+            if (CurrentBars[0] < 1 || CurrentBars[1] < 1) // Or use MarketData.GetBarsNeededToSave(BarsArray[1]) for 60-min
+                return;
+
+            // === Logic for the 60-minute Bars (BarsInProgress == 1) ===
+            if (BarsInProgress == 1)
+            {
+                DateTime sixtyMinBarTime = Times[1][0]; // Time of the current 60-min bar
+
+                // Check for a new day on the 60-minute series
+                if (sixtyMinBarTime.Date != currentSessionDate)
+                {
+                    previousSessionDateForLineRemoval = currentSessionDate; // Store old date for line removal by primary series
+                    currentSessionDate = sixtyMinBarTime.Date;
+                    sessionHigh = double.NaN; // Reset for the new day
+                    sessionLow = double.NaN;
+                    firstHourOfSessionCapturedToday = false;
+
+                    // Update active tags for potential cleanup on termination
+                    activeHighLineTag = "FirstHourHighLine_" + currentSessionDate.ToString("yyyyMMdd");
+                    activeLowLineTag  = "FirstHourLowLine_" + currentSessionDate.ToString("yyyyMMdd");
+                }
+
+                // Capture the first 1-hour bar's H/L for today if not already done and at/after start time
+                // And ensure it's part of the defined session for that 60-min bar
+                if (BarsArray[1].IsFirstBarOfSession || (Times[1][0].TimeOfDay >= SessionStartTime && Times[1][1].TimeOfDay < SessionStartTime) ) // Check if this bar is the first one at/after start time
+                {
+                     if (!firstHourOfSessionCapturedToday && sixtyMinBarTime.Date == currentSessionDate && sixtyMinBarTime.TimeOfDay >= SessionStartTime)
+                    {
+                        sessionHigh = Highs[1][0];
+                        sessionLow  = Lows[1][0];
+                        firstHourOfSessionCapturedToday = true;
+                    }
+                }
+            }
+
+            // === Logic for the Primary Chart Bars (BarsInProgress == 0) ===
+            if (BarsInProgress == 0)
+            {
+                DateTime primaryBarTime = Time[0];
+
+                // Remove lines from a previous session day if the date has changed and removal is pending
+                if (previousSessionDateForLineRemoval != DateTime.MinValue && previousSessionDateForLineRemoval != currentSessionDate && previousSessionDateForLineRemoval != primaryBarTime.Date)
+                {
+                    string oldHighTag = "FirstHourHighLine_" + previousSessionDateForLineRemoval.ToString("yyyyMMdd");
+                    string oldLowTag  = "FirstHourLowLine_" + previousSessionDateForLineRemoval.ToString("yyyyMMdd");
+                    RemoveDrawObject(oldHighTag);
+                    RemoveDrawObject(oldLowTag);
+                    previousSessionDateForLineRemoval = DateTime.MinValue; // Reset after removal
+                }
+
+                // Check if the current primary bar belongs to the session day for which H/L is captured
+                if (primaryBarTime.Date == currentSessionDate && firstHourOfSessionCapturedToday && !double.IsNaN(sessionHigh))
+                {
+                    Values[0][0] = sessionHigh;
+                    Values[1][0] = sessionLow;
+
+                    // Use the active tags which are updated when currentSessionDate changes
+                    RemoveDrawObject(activeHighLineTag); // Remove before drawing to update/move
+                    RemoveDrawObject(activeLowLineTag);
+
+                    Draw.HorizontalLine(this, activeHighLineTag, sessionHigh, HighLineColor, DashStyleHelper.Solid, LineWidth);
+                    Draw.HorizontalLine(this, activeLowLineTag,  sessionLow,  LowLineColor,  DashStyleHelper.Solid, LineWidth);
+                }
+                else // Not the active session day, or H/L not yet captured for this day
+                {
+                    Values[0][0] = double.NaN;
+                    Values[1][0] = double.NaN;
+                    
+                    // If this bar's date is NOT the currentSessionDate, ensure no lines for *this* bar's date are present
+                    // (unless they are the active ones, which this 'else' branch means they are not)
+                    // This helps clean up if scrolling back to days where lines shouldn't be.
+                    string potentiallyStaleHighTag = "FirstHourHighLine_" + primaryBarTime.Date.ToString("yyyyMMdd");
+                    string potentiallyStaleLowTag  = "FirstHourLowLine_" + primaryBarTime.Date.ToString("yyyyMMdd");
+
+                    if (potentiallyStaleHighTag != activeHighLineTag) RemoveDrawObject(potentiallyStaleHighTag);
+                    if (potentiallyStaleLowTag != activeLowLineTag) RemoveDrawObject(potentiallyStaleLowTag);
+                }
+            }
+        }
+
+        #region Properties
+        [NinjaScriptProperty]
+        [Display(Name="High Line Color", Description="Color for the first hour high line.", Order=1, GroupName="Visuals")]
+        public Brush HighLineColor
+        { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name="Low Line Color", Description="Color for the first hour low line.", Order=2, GroupName="Visuals")]
+        public Brush LowLineColor
+        { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, int.MaxValue)]
+        [Display(Name="Line Width", Description="Width of the high and low lines.", Order=3, GroupName="Visuals")]
+        public int LineWidth
+        { get; set; }
+
+        [NinjaScriptProperty]
+        [PropertyEditor("NinjaTrader.Gui.Tools.TimeEditor")]
+        [Display(Name="Session Start Time", Description="The time to start looking for the first 1-hour bar (e.g., 09:30).", Order=4, GroupName="Parameters")]
+        public TimeSpan SessionStartTime
+        { get; set; }
+        #endregion
+    }
+}
+
+#region NinjaScript generated code. Neither change nor remove.
+
+namespace NinjaTrader.NinjaScript.Indicators
+{
+	public partial class Indicator : NinjaTrader.Gui.NinjaScript.IndicatorRenderBase
+	{
+		private FirstHourHLAdvanced[] cacheFirstHourHLAdvanced;
+		public FirstHourHLAdvanced FirstHourHLAdvanced(Brush highLineColor, Brush lowLineColor, int lineWidth, TimeSpan sessionStartTime)
+		{
+			return FirstHourHLAdvanced(Input, highLineColor, lowLineColor, lineWidth, sessionStartTime);
+		}
+
+		public FirstHourHLAdvanced FirstHourHLAdvanced(ISeries<double> input, Brush highLineColor, Brush lowLineColor, int lineWidth, TimeSpan sessionStartTime)
+		{
+			if (cacheFirstHourHLAdvanced != null)
+				for (int idx = 0; idx < cacheFirstHourHLAdvanced.Length; idx++)
+					if (cacheFirstHourHLAdvanced[idx] != null && cacheFirstHourHLAdvanced[idx].HighLineColor == highLineColor && cacheFirstHourHLAdvanced[idx].LowLineColor == lowLineColor && cacheFirstHourHLAdvanced[idx].LineWidth == lineWidth && cacheFirstHourHLAdvanced[idx].SessionStartTime == sessionStartTime && cacheFirstHourHLAdvanced[idx].EqualsInput(input))
+						return cacheFirstHourHLAdvanced[idx];
+			return CacheIndicator<FirstHourHLAdvanced>(new FirstHourHLAdvanced(){ HighLineColor = highLineColor, LowLineColor = lowLineColor, LineWidth = lineWidth, SessionStartTime = sessionStartTime }, input, ref cacheFirstHourHLAdvanced);
+		}
+	}
+}
+
+namespace NinjaTrader.NinjaScript.MarketAnalyzerColumns
+{
+	public partial class MarketAnalyzerColumn : MarketAnalyzerColumnBase
+	{
+		public Indicators.FirstHourHLAdvanced FirstHourHLAdvanced(Brush highLineColor, Brush lowLineColor, int lineWidth, TimeSpan sessionStartTime)
+		{
+			return indicator.FirstHourHLAdvanced(Input, highLineColor, lowLineColor, lineWidth, sessionStartTime);
+		}
+
+		public Indicators.FirstHourHLAdvanced FirstHourHLAdvanced(ISeries<double> input , Brush highLineColor, Brush lowLineColor, int lineWidth, TimeSpan sessionStartTime)
+		{
+			return indicator.FirstHourHLAdvanced(input, highLineColor, lowLineColor, lineWidth, sessionStartTime);
+		}
+	}
+}
+
+namespace NinjaTrader.NinjaScript.Strategies
+{
+	public partial class Strategy : NinjaTrader.Gui.NinjaScript.StrategyRenderBase
+	{
+		public Indicators.FirstHourHLAdvanced FirstHourHLAdvanced(Brush highLineColor, Brush lowLineColor, int lineWidth, TimeSpan sessionStartTime)
+		{
+			return indicator.FirstHourHLAdvanced(Input, highLineColor, lowLineColor, lineWidth, sessionStartTime);
+		}
+
+		public Indicators.FirstHourHLAdvanced FirstHourHLAdvanced(ISeries<double> input , Brush highLineColor, Brush lowLineColor, int lineWidth, TimeSpan sessionStartTime)
+		{
+			return indicator.FirstHourHLAdvanced(input, highLineColor, lowLineColor, lineWidth, sessionStartTime);
+		}
+	}
+}
+
+#endregion
+/*
+The main purpose of this indicator is to:
+
+Identify the first 60-minute period that occurs on or after a user-defined SessionStartTime for each trading day.
+Capture the highest high and lowest low within that specific 60-minute period.
+Draw horizontal lines at these high and low levels on your chart.
+Ensure these lines only appear for the current trading day being processed by the chart, and that lines from previous days are removed.
+Allow this functionality on any chart timeframe (e.g., 5-minute, 15-minute, tick chart, etc.) by using an independent 60-minute data series in the background.
+
+How It Works - Section by Section:
+
+#region Using declarations
+
+This section imports necessary namespaces from the .NET Framework and NinjaTrader's API, providing access to classes for drawing, data handling, UI elements, etc.
+namespace NinjaTrader.NinjaScript.Indicators
+
+This defines the namespace where your custom indicator resides. It's a standard structure for NinjaTrader indicators.
+public class FirstHourHLAdvanced : Indicator
+
+This declares your indicator class, inheriting from NinjaTrader's base Indicator class, which provides the core functionality and lifecycle methods.
+Private Variables (Fields):
+
+sessionHigh, sessionLow: Store the calculated high and low of the first hour. Initialized to double.NaN (Not a Number) to indicate they haven't been set yet.
+currentSessionDate: Keeps track of the date of the trading session for which the high/low is currently being calculated or displayed.
+previousSessionDateForLineRemoval: Stores the date of the previous session. This is used to ensure lines from that old session are cleaned up when a new day begins on the primary chart.
+firstHourOfSessionCapturedToday: A boolean flag that becomes true once the high and low for the current day's first hour have been identified from the 60-minute data.
+activeHighLineTag, activeLowLineTag: Strings used to uniquely identify the drawing objects (the horizontal lines) on the chart. This is crucial for updating or removing them correctly. Tags include the date to ensure uniqueness per day.
+protected override void OnStateChange()
+
+This method is called by NinjaTrader at different stages of the indicator's lifecycle.
+State.SetDefaults:
+Executed once when the indicator is first loaded or reset.
+Sets up default properties: Description, Name, Calculate (when to run OnBarUpdate), IsOverlay (draw on price panel), DisplayInDataBox, etc.
+Initializes user-configurable parameters: HighLineColor, LowLineColor, LineWidth, and crucially, SessionStartTime (defaulting to 9:30 AM).
+AddPlot(): Creates two data series (plots) that can be displayed in the Data Box or used by other scripts. These plots will show the sessionHigh and sessionLow values.
+State.Configure:
+Executed after SetDefaults. This is where you configure data series.
+AddDataSeries(BarsPeriodType.Minute, 60);: This is a key line. It tells NinjaTrader to load an additional, secondary data series of 60-minute bars in the background, regardless of what timeframe your main chart is using. BarsInProgress == 0 will refer to your main chart's bars, and BarsInProgress == 1 will refer to these 60-minute bars.
+State.DataLoaded:
+Executed once all historical data for all configured data series has been loaded. You could put initialization code here that depends on historical data.
+State.Terminated:
+Executed when the indicator is removed from the chart or the chart is closed.
+It attempts to clean up by removing any currently active drawn lines using RemoveDrawObject().
+protected override void OnBarUpdate()
+
+This is the heart of the indicator, executed for each incoming bar update. Because we have two data series (primary chart and secondary 60-minute), this method will be called for updates on either series. The BarsInProgress property tells us which series triggered the current call.
+Initial Check: if (CurrentBars[0] < 1 || CurrentBars[1] < 1) return;
+Ensures there's at least one bar loaded for both the primary series (CurrentBars[0]) and the 60-minute series (CurrentBars[1]) before proceeding.
+Logic for 60-minute Bars (if (BarsInProgress == 1)):
+This block executes when there's an update on the hidden 60-minute data series.
+DateTime sixtyMinBarTime = Times[1][0];: Gets the timestamp of the current 60-minute bar.
+New Day Detection: if (sixtyMinBarTime.Date != currentSessionDate)
+If the date of the current 60-minute bar is different from currentSessionDate, it means a new trading day has started on the 60-minute series.
+previousSessionDateForLineRemoval is updated to the old currentSessionDate. This old date's lines will be targeted for removal by the primary series logic.
+currentSessionDate is updated to the new day's date.
+sessionHigh, sessionLow, and firstHourOfSessionCapturedToday are reset for the new day.
+activeHighLineTag and activeLowLineTag are updated with the new date.
+Capturing First Hour High/Low:
+if (BarsArray[1].IsFirstBarOfSession || (Times[1][0].TimeOfDay >= SessionStartTime && Times[1][1].TimeOfDay < SessionStartTime))
+This complex condition tries to identify the very first 60-minute bar that occurs at or after the SessionStartTime.
+BarsArray[1].IsFirstBarOfSession: Checks if NinjaTrader considers this 60-minute bar the official start of a session (based on the session template).
+(Times[1][0].TimeOfDay >= SessionStartTime && Times[1][1].TimeOfDay < SessionStartTime): This part is a more direct check. It looks for a 60-minute bar whose start time (Times[1][0]) is at or after SessionStartTime, AND whose previous bar's start time (Times[1][1]) was before SessionStartTime. This helps pinpoint the exact 60-minute bar that crosses or starts at SessionStartTime.
+if (!firstHourOfSessionCapturedToday && sixtyMinBarTime.Date == currentSessionDate && sixtyMinBarTime.TimeOfDay >= SessionStartTime)
+If the above condition (identifying the target 60-min bar) is met, AND the first hour's H/L for currentSessionDate hasn't been captured yet, AND this bar is indeed on the currentSessionDate and at/after SessionStartTime:
+sessionHigh = Highs[1][0]; and sessionLow = Lows[1][0]; capture the high and low of this specific 60-minute bar. (Highs[1] and Lows[1] refer to the High and Low series of the 60-minute data).
+firstHourOfSessionCapturedToday = true; flags that we've got the data for the day.
+Logic for Primary Chart Bars (if (BarsInProgress == 0)):
+This block executes when there's an update on your main chart (e.g., a new 5-minute bar forms).
+DateTime primaryBarTime = Time[0];: Gets the timestamp of the current primary chart bar.
+Remove Old Day's Lines:
+if (previousSessionDateForLineRemoval != DateTime.MinValue && ...): If previousSessionDateForLineRemoval holds a valid date (meaning a new day started on the 60-min series) and this date is different from the currentSessionDate (being processed) and also different from the current primaryBarTime.Date, it means we need to clean up lines from that "previous" day.
+RemoveDrawObject(oldHighTag); and RemoveDrawObject(oldLowTag); remove the lines associated with that previousSessionDateForLineRemoval.
+Drawing/Updating Current Day's Lines:
+if (primaryBarTime.Date == currentSessionDate && firstHourOfSessionCapturedToday && !double.IsNaN(sessionHigh)):
+If the current primary bar's date matches currentSessionDate (the day for which we have H/L data), AND firstHourOfSessionCapturedToday is true, AND sessionHigh is a valid number:
+Values[0][0] = sessionHigh; and Values[1][0] = sessionLow; set the plot values for the current primary bar.
+RemoveDrawObject(activeHighLineTag); and RemoveDrawObject(activeLowLineTag); are called before drawing. This ensures that if the lines already exist (e.g., from a previous bar on the same day), they are removed and redrawn. This is how the lines extend across the current day.
+Draw.HorizontalLine(...): Draws the actual high and low lines on the chart using the captured sessionHigh, sessionLow, and the configured colors/width.
+Not the Active Session Day / Data Not Ready:
+else: If the conditions to draw are not met (e.g., it's a historical bar from a different day, or the first hour's H/L for today hasn't been captured yet):
+Values[0][0] = double.NaN; and Values[1][0] = double.NaN; set the plot values to "Not a Number," effectively hiding them for this bar.
+The code also includes logic to remove potentially stale lines from other dates if you scroll back in history, ensuring only the currentSessionDate's lines (if ready) are visible.
+#region Properties
+
+This section defines the parameters that users can configure in the indicator's settings window.
+HighLineColor, LowLineColor, LineWidth: Allow customization of the lines' appearance.
+SessionStartTime: This is crucial. It uses [PropertyEditor("NinjaTrader.Gui.Tools.TimeEditor")] to provide a user-friendly time picker in the settings. The type is TimeSpan.
+In Summary:
+
+The indicator cleverly uses a secondary 60-minute data series to perform its core calculation (finding the first hour's high/low after a specific start time). It then uses the OnBarUpdate calls from the primary chart's data series to display these calculated levels as lines, but only for the current trading day being processed by the 60-minute series. The date tracking and line tag management are essential for ensuring lines appear and disappear correctly as new days begin and as you scroll through chart history.
+
+*/
