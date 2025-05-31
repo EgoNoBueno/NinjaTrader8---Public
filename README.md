@@ -8,8 +8,9 @@ This project is provided "as is" and without any warranty. By using the code and
 This project is a NinjaTrader code share. It was created to collaborate on Ninjatrader Code.
 
 Built With:
-NinjaTrader Script Editor
-Gemini AI 2.5 Pro
+Code built in Visual Studio, with development using Gemini 2.5 Pro, and then compile verified in Ninjatrader Editor.
+Currently switching over to Copilot for code development.
+Documents built using Gemini AI 2.5 Pro Deep Research.
 
 🚀 Getting Started
 To get a local copy up and running, follow these simple steps.
