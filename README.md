@@ -1,6 +1,8 @@
 # NinjaTrader8---Public
 NinjaTrader Code Share
 
+#ninjatrader , #ninjatrader8,  #nt8, #ninjascript, #autotrading, #algotrading, #tradingbot 
+
 ⚠️ Disclaimer
 This project is provided "as is" and without any warranty. By using the code and information in this repository, you agree that the author is not responsible for any problems, damages, or losses that may arise from its use. You are solely responsible for any consequences of using or misusing this code.
 
